@@ -155,6 +155,56 @@ fn softmax_numerical_stability() -> Result<()> {
     Ok(())
 }
 
+/// Test RoPE with narrowed cos/sin at high offsets (reproduces prefix cache bug)
+fn ropei_narrow_high_offset(device: &Device) -> Result<()> {
+    // This test reproduces a bug where RoPE with narrowed cos/sin tensors
+    // at high offsets (e.g., 537) produces incorrect results on Metal.
+    // This simulates the prefix cache scenario in LLM inference.
+    
+    let max_seq = 1024;
+    let head_dim = 128;
+    let half_dim = head_dim / 2;
+    let seq_len = 6;
+    
+    // Test with both F32 and BF16 (the bug may be dtype-specific)
+    for dtype in [candle::DType::F32, candle::DType::BF16] {
+        // Create full cos/sin tensors
+        let cos_full = Tensor::ones((max_seq, half_dim), dtype, device)?;
+        let sin_full = Tensor::zeros((max_seq, half_dim), dtype, device)?;
+        
+        // Create Q tensor
+        let q = Tensor::ones((1, 1, seq_len, head_dim), dtype, device)?;
+        
+        // Test with low offset (should work)
+        let offset_low = 9;
+        let cos_low = cos_full.narrow(0, offset_low, seq_len)?;
+        let sin_low = sin_full.narrow(0, offset_low, seq_len)?;
+        let result_low = candle_nn::rotary_emb::rope_i(&q.contiguous()?, &cos_low, &sin_low)?;
+        
+        // Test with high offset (might fail on Metal)
+        let offset_high = 537;
+        let cos_high = cos_full.narrow(0, offset_high, seq_len)?;
+        let sin_high = sin_full.narrow(0, offset_high, seq_len)?;
+        let result_high = candle_nn::rotary_emb::rope_i(&q.contiguous()?, &cos_high, &sin_high)?;
+        
+        // With cos=1, sin=0, output should equal input for both offsets
+        let result_low_f32 = result_low.to_dtype(candle::DType::F32)?;
+        let result_high_f32 = result_high.to_dtype(candle::DType::F32)?;
+        let q_f32 = q.to_dtype(candle::DType::F32)?;
+        
+        let diff_low = (&result_low_f32 - &q_f32)?.abs()?.max_all()?.to_vec0::<f32>()?;
+        let diff_high = (&result_high_f32 - &q_f32)?.abs()?.max_all()?.to_vec0::<f32>()?;
+        let diff_between = (&result_low_f32 - &result_high_f32)?.abs()?.max_all()?.to_vec0::<f32>()?;
+        
+        let tol = if dtype == candle::DType::BF16 { 0.01 } else { 1e-5 };
+        assert!(diff_low < tol, "{:?}: Low offset result differs from input: {}", dtype, diff_low);
+        assert!(diff_high < tol, "{:?}: High offset result differs from input: {}", dtype, diff_high);
+        assert!(diff_between < tol, "{:?}: Low and high offset results differ: {}", dtype, diff_between);
+    }
+    
+    Ok(())
+}
+
 fn ropei(device: &Device) -> Result<()> {
     use rand::{rngs::StdRng, Rng, SeedableRng};
 
@@ -325,6 +375,7 @@ fn sigmoid(device: &Device) -> Result<()> {
 }
 
 test_device!(ropei, ropei_cpu, ropei_gpu, ropei_metal);
+test_device!(ropei_narrow_high_offset, ropei_narrow_cpu, ropei_narrow_gpu, ropei_narrow_metal);
 test_device!(rope, rope_cpu, rope_gpu, rope_metal);
 test_device!(rope_thd, rope_thd_cpu, rope_thd_gpu, rope_thd_metal);
 test_device!(softmax, softmax_cpu, softmax_gpu, softmax_metal);
