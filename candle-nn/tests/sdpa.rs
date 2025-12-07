@@ -43,8 +43,8 @@ mod metal_sdpa_tests {
         let error: f32 = ((&ground_truth - &sdpa_output)?.abs()? / &ground_truth.abs()?)?
             .sum_all()?
             .to_scalar()?;
-        // Larger sequences have higher accumulated error
-        assert!(error <= 0.02, "{}", error);
+        // Note: sdpa_full has slightly different precision than manual computation
+        assert!(error <= 0.002, "{}", error);
         Ok(())
     }
 
@@ -80,11 +80,9 @@ mod metal_sdpa_tests {
 
     #[test]
     fn sdpa_full_softcapping() -> Result<()> {
-        // Test softcapping with sdpa_vector kernel (q_seq = 1)
-        // NOTE: Vector kernel only supports q_seq = 1 correctly
-        // Full kernel does NOT support softcapping
+        // Note: sdpa_full doesn't support softcapping, so we use q_seq=1 to use sdpa_vector
         const BS: usize = 4;
-        const R: usize = 1; // Vector kernel requires q_seq = 1
+        const R: usize = 1;
         const L: usize = 4;
         const DK: usize = 64;
         const H: usize = 3;
@@ -113,7 +111,7 @@ mod metal_sdpa_tests {
         let error: f32 = ((&ground_truth - &sdpa_output)?.abs()? / &ground_truth.abs()?)?
             .sum_all()?
             .to_scalar()?;
-        // Slightly higher error for cross-attention case (R=1, L=4)
+        // Softcapping with different L/R has slightly higher precision difference
         assert!(error <= 0.002, "{}", error);
         Ok(())
     }
