@@ -1038,8 +1038,14 @@ impl candle::CustomOp3 for Sdpa {
             || q_head == 256;
 
         let supports_sdpa_full_mask = !self.mask.is_some() || q_seq <= k_seq;
-        let supports_sdpa_full = q_seq > 8 && supported_head_dim && supports_sdpa_full_mask;
-        let supports_sdpa_vector = q_seq <= 8 && supported_head_dim && q_seq <= k_seq;
+        // Note: sdpa_vector kernel only supports q_seq == 1 (single query token).
+        // The kernel dispatches batch*heads thread groups and assumes exactly one query per head.
+        // For q_seq > 1, we must use sdpa_full which handles multiple query tokens.
+        // Also, sdpa_full doesn't support softcapping, so fall back to non-SDPA path when enabled.
+        let can_use_sdpa_full = self.softcapping == 1.0;
+        let supports_sdpa_full =
+            q_seq > 1 && supported_head_dim && supports_sdpa_full_mask && can_use_sdpa_full;
+        let supports_sdpa_vector = q_seq == 1 && supported_head_dim && q_seq <= k_seq;
 
         implementation_supports_use_case &= supports_sdpa_full || supports_sdpa_vector;
 
